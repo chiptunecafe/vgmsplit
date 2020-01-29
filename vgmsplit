@@ -1,0 +1,308 @@
+#!/usr/bin/env lua
+
+-- printers & helpers
+local function ilines (str)
+  str = (str:sub (-1) ~= "\n") and str .. "\n" or str
+  return str:gmatch ("(.-)\n")
+end
+
+local function formatMessageMultiline (str, padding, severity)
+  local first = true
+  local newstr = {}
+
+  if #severity + 2 > padding then
+    padding = #severity + 2
+  end
+
+  for line in ilines (str) do
+    if first then
+      newstr[1] = string.format (
+        "%s:%s%s",
+        severity, string.rep (" ", padding - (#severity + 1)), line
+      )
+      first = false
+    else
+      newstr[#newstr + 1] = string.rep (" ", padding) .. line
+    end
+  end
+
+  return table.concat (newstr, "\n")
+end
+
+local function isValueInTable (tbl, val)
+  for l, v in pairs (tbl) do
+    if (v == val) then
+      return true
+    end
+  end
+  return false
+end
+
+local function statPrint (err, severity)
+  severity = severity or "ERROR"
+  io.stderr:write (formatMessageMultiline (err, 10, severity) .. "\n")
+end
+
+local function handlerAbort (err)
+  statPrint (err, "FATAL")
+  statPrint ("Severe malfunction caught, aborting...", "FATAL")
+  os.exit (1)
+end
+
+local function handlerWarn (err)
+  statPrint (err, "WARN")
+end
+
+local function handlerInfo (err)
+  statPrint (err, "INFO")
+end
+
+local function handlerDebug (err)
+  statPrint (err, "DEBUG")
+end
+
+local function isAvailableDirectory (dirpath, errname, nice)
+  local dirtype, err = path.fs.type (dirpath)
+  if not dirtype then
+    if not nice then
+      error (string.format (
+        "Failed to check %s!\n" ..
+        "%s",
+        errname, err
+      ), 3)
+    else
+      handlerWarn (string.format (
+        "Failed to check %s:\n" ..
+        "%s",
+        errname, err
+      ))
+      handlerWarn (string.format (
+        "Will attempt to mkdir incase %s doesn't exist yet.",
+        errname
+      ))
+      local mksuccess, mkerr = path.fs.makedirs (dirpath)
+      if not mksuccess then
+        error (string.format (
+          "Failed to mkdir %s!\n%s",
+          errname, mkerr
+        ), 3)
+      end
+    end
+  elseif (dirtype ~= "dir") then
+    error (string.format (
+      "Supplied %s is not a directory (type '%s')!",
+      errname, dirtype
+    ), 3)
+  end
+end
+
+
+local function loadDependencies()
+  argparse  = require "argparse"
+  inifile   = require "inifile"
+  path      = require "path"
+  path.info = require "path.info"
+  path.fs   = require "path.fs"
+
+  local binpath = path.split (path.join (path.abs (arg[0])))
+  handlerInfo (binpath)
+
+  --[[
+    || TODO
+    || involve XDG_DATA_DIRS here
+    || proper (theoretical) system package installation would want to split
+    || executable bin from data
+  --]]
+  package.path = table.concat ({
+    binpath .. "?.lua",
+    binpath .. "libs/?/init.lua",
+    binpath .. "libs/?/?.lua",
+    package.path,
+  }, ";")
+
+  handlerDebug (string.format (
+    "Platform: %s",
+    path.fs.platform() .. (path.fs.platform():match ("Windows") and " (Good luck fella! o7)" or "")
+  ))
+  handlerDebug ("Dependencies loaded.")
+end
+
+local function parseArguments()
+  local parser = argparse (
+    "vgmsplit",
+    "A tool to automate the process of recording multiple soundchips & channels from a VGM file.",
+    "WIP :)"
+  )
+  parser:argument (
+    "vgmfile",
+    "A VGM file to pass to vgmplay."
+  )
+  local parsed, dat = parser:pparse()
+  if not parsed then
+    error (dat .. "\n" .. parser:get_usage(), 2)
+  else
+    return dat
+  end
+end
+
+local function loadVgmplayVoices()
+  return require "vgmplay_voices"
+end
+
+local function loadConfiguration()
+  local config = require "config"
+  handlerDebug ("Configuration loaded.")
+  return config
+end
+
+local function assurePathDelimiter (somepath)
+  local delim = package.config:sub (1,1)
+  return (somepath:sub (-1) ~= delim and (somepath .. delim) or somepath)
+end
+
+local function loadVgmplayIni (inipath)
+  local vgmini = inifile.parse (path (inipath, "VGMPlay.ini"), "io")
+  if (not vgmini) then
+    error ("VGMPlay.ini could not be loaded!", 2)
+  end
+  handlerDebug ("VGMPlay.ini loaded.")
+  return vgmini
+end
+
+
+local function checkConfiguration (knownConfig, suppliedConfig)
+  suppliedConfig.inidir = assurePathDelimiter (suppliedConfig.inidir)
+  isAvailableDirectory (suppliedConfig.inidir, "inidir")
+  suppliedConfig.datadir = assurePathDelimiter (suppliedConfig.datadir)
+  isAvailableDirectory (suppliedConfig.datadir, "datadir", true)
+  for chip, solos in pairs (suppliedConfig.solos) do
+    if not knownConfig[chip] then
+      error (string.format (
+        "Unknown chip '%s', make sure to follow the naming in VGMPlay.ini!",
+        chip
+      ), 2)
+    end
+    handlerDebug (chip)
+    if (type (solos) ~= "boolean") then
+      for _dummy, voice in ipairs (solos) do
+        for voiceSplit in (voice .. "+"):gmatch ("([^+]-)+") do
+          if not isValueInTable (knownConfig[chip], voiceSplit) then
+            error (string.format (
+              "Unknown voice '%s' for chip '%s', make sure to follow the naming in VGMPlay.ini!",
+              voiceSplit, chip
+            ), 2)
+          end
+        end
+      end
+    end
+  end
+  handlerDebug ("Configuration verified.")
+end
+
+local function setupIni (ini, knownVoices, chip, voices)
+  for currentChip, currentVoices in pairs (knownVoices) do
+    if currentChip ~= chip then
+      ini[currentChip].Disabled = "True"
+    else
+      ini[chip].Disabled = "False"
+      local parsedVoices = {}
+      for parsedVoice in (voices .. "+"):gmatch ("([^%+]*)%+") do
+        parsedVoices[parsedVoice] = true
+      end
+      for _dummy, currentVoice in ipairs (currentVoices) do
+        if not parsedVoices[currentVoice] then
+          ini[chip]["Mute" .. currentVoice] = "True"
+        else
+          ini[chip]["Mute" .. currentVoice] = "False"
+        end
+      end
+    end
+  end
+end
+
+local function doRecordings (knownVoices, suppliedConfig, suppliedIni, parsedArguments)
+  --if not dirname then
+  local dirname
+  if true then
+    --[[
+      || TODO
+      || move to separate function?
+      ||
+      || get random dirname
+      || os.tmpname autocreates file on POSIX, ugly
+      || seed & prerun rand
+    --]]
+    math.randomseed (os.time())
+    math.random ()
+    math.random ()
+    math.random ()
+    math.random ()
+    math.random ()
+    -- generate string of 16 alphanumeric ASCII characters (0-9, A-Z, a-z)
+    local dirnametbl = {}
+    for i = 1, 16 do
+      local rand = math.random (0, 61)
+      rand = (rand <= 9) and (rand + 0x30)
+             or (rand <= 35) and (rand + 0x37)
+             or (rand + 0x3D)
+      dirnametbl[#dirnametbl + 1] = string.char (rand)
+    end
+    dirname = table.concat (dirnametbl)
+  end
+  handlerInfo ("Dir is " .. dirname)
+
+  -- TODO: actually make use of argparse
+  local vgmfile = parsedArguments.vgmfile --"/home/bt1cn/devel/vgmplay/WORMSUIT_AGD.VGM"
+
+  local delim = package.config:sub (1,1)
+  for chip, chipSolos in pairs (suppliedConfig.solos) do
+    for _dummy, solo in ipairs ((type (chipSolos) ~= "boolean") and chipSolos or knownVoices[chip]) do
+      local recordingDir = suppliedConfig.datadir .. dirname .. delim .. chip .. delim .. solo .. delim
+      path.fs.makedirs (recordingDir)
+      setupIni (suppliedIni, knownVoices, chip, solo)
+      local newIni = inifile.save ("VGMPlay.ini", suppliedIni, "memory")
+      local newIniFile = io.open (recordingDir .. "VGMPlay.ini", "w")
+      newIniFile:write (newIni)
+      newIniFile:close()
+      local vgmfilename = select (2, path.split (vgmfile))
+      path.fs.copy (vgmfile, path (recordingDir, vgmfilename))
+      handlerInfo ("Recording chip " .. chip .. ", voice(s) " .. solo)
+      os.execute (string.format (
+        "cd '%s'; %svgmplay %s",
+        recordingDir,
+        (suppliedConfig.vgmplay_local and suppliedConfig.inidir or ""),
+        path (recordingDir, vgmfilename)
+      ))
+    end
+  end
+  return dirname
+end
+
+-- glue logic
+local function main()
+  handlerDebug ("Startup...")
+  xpcall (loadDependencies, handlerAbort)
+
+  -- TODO: actually make use of argparse
+  local arguments
+  _dummy, arguments = xpcall (parseArguments, handlerAbort)
+
+  local voices, config
+  _dummy, voices = xpcall (loadVgmplayVoices, handlerAbort)
+  _dummy, config = xpcall (loadConfiguration, handlerAbort)
+
+  --[[
+    || TODO
+    || real Lua 5.1 xpcall can't pass extra function arguments
+    || test version & wrap function for portability
+  --]]
+  xpcall (checkConfiguration, handlerAbort, voices, config)
+
+  local ini
+  _dummy, ini    = xpcall (loadVgmplayIni, handlerAbort, config.inidir)
+
+  -- TODO: do the recordings
+  xpcall (doRecordings, handlerAbort, voices, config, ini, arguments)
+end
+
+main()
