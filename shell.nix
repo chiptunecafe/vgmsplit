@@ -1,6 +1,28 @@
-with import /nixpkgs {};
+with import <nixpkgs> { };
+
+with pkgs;
 
 let
+  inifile = luajitPackages.buildLuarocksPackage {
+    pname = "inifile";
+    version = "1.0-2";
+
+    src = fetchurl {
+      url = "mirror://luarocks/inifile-1.0-2.src.rock";
+      sha256 = "1hkq6wzyjixal0wn2mw05i5r1wfvynmjviyx7q91l2g8h8k48d2g";
+    };
+    propagatedBuildInputs = [ luajit ];
+  };
+  lpath = luajitPackages.buildLuarocksPackage {
+    pname = "lpath";
+    version = "0.3.1-1";
+
+    src = fetchurl {
+      url = "mirror://luarocks/lpath-0.3.1-1.src.rock";
+      sha256 = "00r9cmbjrcrn22zys2zipknvcvi6rkzpihzwf4k0sy9msnwian3d";
+    };
+    propagatedBuildInputs = [ luajit ];
+  };
   luaInterp = luajit.withPackages (ps: with ps; [
     argparse
     inifile
@@ -13,40 +35,5 @@ in
   pkgs.mkShell {
     buildInputs = [
       luaInterp
-      (vim_configurable.customize {
-        name = "vim";
-        vimrcConfig = {
-          customRC = ''
-            set nocompatible
-            set history=1024
-            if has ("syntax")
-              syntax on
-            endif
-            set ruler
-            set mouse-=a
-            set tabstop=2
-            set shiftwidth=2
-            set softtabstop=2
-            set expandtab
-            set number
-            set laststatus=2
-            set noshowmode
-          '';
-          packages.myVimPackages = with pkgs.vimPlugins; {
-            start = [
-              vim-better-whitespace
-              vim-indent-guides
-              vim-nix
-              youcompleteme
-              ale
-              editorconfig-vim
-              file-line
-              Recover-vim
-              lightline-vim
-              lightline-ale
-            ];
-          };
-        };
-      })
     ];
 }

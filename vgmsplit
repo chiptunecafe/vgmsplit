@@ -62,19 +62,16 @@ local function handlerDebug (err)
 end
 
 local function isAvailableDirectory (dirpath, errname, nice)
-  local dirtype, err = path.fs.type (dirpath)
-  if not dirtype then
+  if not path.exists (dirpath) then
     if not nice then
       error (string.format (
-        "Failed to check %s!\n" ..
-        "%s",
-        errname, err
-      ), 3)
+        "Failed to check %s!\n",
+        errname
+      ), 2)
     else
       handlerWarn (string.format (
-        "Failed to check %s:\n" ..
-        "%s",
-        errname, err
+        "Failed to check %s:\n",
+        errname
       ))
       handlerWarn (string.format (
         "Will attempt to mkdir incase %s doesn't exist yet.",
@@ -88,7 +85,7 @@ local function isAvailableDirectory (dirpath, errname, nice)
         ), 3)
       end
     end
-  elseif (dirtype ~= "dir") then
+  elseif not path.isdir (dirpath) then
     error (string.format (
       "Supplied %s is not a directory (type '%s')!",
       errname, dirtype
@@ -104,7 +101,7 @@ local function loadDependencies()
   path.info = require "path.info"
   path.fs   = require "path.fs"
 
-  local binpath = path.split (path.join (path.abs (arg[0])))
+  local binpath = path.parent (path.abs (arg[0])) .. path.info.sep
   handlerInfo (binpath)
 
   --[[
@@ -122,7 +119,7 @@ local function loadDependencies()
 
   handlerDebug (string.format (
     "Platform: %s",
-    path.fs.platform() .. (path.fs.platform():match ("Windows") and " (Good luck fella! o7)" or "")
+    path.info.platform .. (path.info.platform:match ("Windows") and " (Good luck fella! o7)" or "")
   ))
   handlerDebug ("Dependencies loaded.")
 end
@@ -200,20 +197,28 @@ local function checkConfiguration (knownConfig, suppliedConfig)
 end
 
 local function setupIni (ini, knownVoices, chip, voices)
+  if ini["General"] and ini["General"].LogSound then
+    handlerInfo ("Setting LogSound")
+    ini["General"].LogSound = 1
+  end
   for currentChip, currentVoices in pairs (knownVoices) do
-    if currentChip ~= chip then
-      ini[currentChip].Disabled = "True"
+    if not ini[currentChip] then
+      handlerInfo ("Unknown chip in vgmsplit_voices: " .. currentChip)
     else
-      ini[chip].Disabled = "False"
-      local parsedVoices = {}
-      for parsedVoice in (voices .. "+"):gmatch ("([^%+]*)%+") do
-        parsedVoices[parsedVoice] = true
-      end
-      for _dummy, currentVoice in ipairs (currentVoices) do
-        if not parsedVoices[currentVoice] then
-          ini[chip]["Mute" .. currentVoice] = "True"
-        else
-          ini[chip]["Mute" .. currentVoice] = "False"
+      if currentChip ~= chip then
+        ini[currentChip].Disabled = "True"
+      else
+        ini[currentChip].Disabled = "False"
+        local parsedVoices = {}
+        for parsedVoice in (voices .. "+"):gmatch ("([^%+]*)%+") do
+          parsedVoices[parsedVoice] = true
+        end
+        for _dummy, currentVoice in ipairs (currentVoices) do
+          if not parsedVoices[currentVoice] then
+            ini[chip]["Mute" .. currentVoice] = "True"
+          else
+            ini[chip]["Mute" .. currentVoice] = "False"
+          end
         end
       end
     end
@@ -264,7 +269,7 @@ local function doRecordings (knownVoices, suppliedConfig, suppliedIni, parsedArg
       local newIniFile = io.open (recordingDir .. "VGMPlay.ini", "w")
       newIniFile:write (newIni)
       newIniFile:close()
-      local vgmfilename = select (2, path.split (vgmfile))
+      local vgmfilename = path.name (vgmfile)
       path.fs.copy (vgmfile, path (recordingDir, vgmfilename))
       handlerInfo ("Recording chip " .. chip .. ", voice(s) " .. solo)
       os.execute (string.format (

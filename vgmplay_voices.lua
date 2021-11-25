@@ -1,7 +1,7 @@
 local function genCh (max, extras, ChPrefix)
   local gen = {}
   for i = 0, max do
-    gen[i] = (ChPrefix or "Ch") .. i
+    gen[i + 1] = (ChPrefix or "Ch") .. i
   end
   for k,v in ipairs (extras or {}) do
     gen[#gen + 1] = v
